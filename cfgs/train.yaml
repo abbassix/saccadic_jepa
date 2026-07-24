@@ -20,7 +20,7 @@ data:
   dataset_path: "~/datasets/vision/imagenet"
   img_size: 320
   crop_size: 128
-  batch_size: 256
+  batch_size: 1024
   num_workers: 16
   pin_mem: true
   persistent_workers: true
@@ -54,7 +54,7 @@ optim:
   grad_clip_idm: 20.0
   weight_decay: 0.0
 eval:
-  batch_size: 256
+  batch_size: 512
   candidate_stride: 32
   refine_iters: 3
   refine_window: 1
