@@ -1,0 +1,52 @@
+# cfgs/train.yaml
+note: MobileNetV2 with idm.hidden_dim=1024, clf with detach
+
+logging:
+  log_wandb: true
+  wandb_group:
+  wandb_sweep:
+  log_every: 1
+  exp_suffix: 26-01-15
+  save_every_n_epochs: 1
+  tqdm_silent: false
+meta:
+  device: "cuda:3"
+  model_folder:
+  load_model: false
+  enable_eval: true
+  enable_plan_eval: true
+  eval_every_itr: -1
+  light_eval_freq: 50
+  seed: 1
+data:
+  env_name: imagenet_patches
+  dataset_path: "~/datasets/vision/imagenet/"
+  img_size: 256
+  crop_size: 96
+  batch_size: 512
+  num_workers: 16
+  pin_mem: true
+  persistent_workers: true
+training:
+  use_amp: true
+  dtype: bfloat16
+model:
+  compile: false
+  encoder_architecture: mobilenetv2
+  num_classes: 1000
+  idm:
+    hidden_dim: 1024
+  regularizer:
+    cov_coeff: 8
+    std_coeff: 16 # 4.0
+    idm_coeff: 1
+    use_proj: false
+    idm_after_proj: false
+optim:
+  epochs: 12
+  lr: 0.001
+  grad_clip_enc: 2.0
+  grad_clip_pred: 2.0
+  weight_decay: 1.e-5
+eval:
+  batch_size: 512
