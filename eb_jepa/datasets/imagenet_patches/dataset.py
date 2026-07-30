@@ -52,7 +52,7 @@ class ImagePatchLocatingDataset(ImageNetBaseDataset):
             raise ValueError("crop_size must be <= img_size")
 
         # Resize only—no cropping here. We handle cropping manually for efficiency.        
-        self.transforms = transforms.Compose([
+        self.transform = transforms.Compose([
             transforms.Resize(config.img_size),  # shortest side = img_size
             transforms.CenterCrop(config.img_size),
             transforms.ToTensor(),
