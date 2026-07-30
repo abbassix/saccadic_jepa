@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import mobilenet_v2
 from torchvision.models.mobilenetv2 import InvertedResidual
+from torchvision.ops import Conv2dNormActivation
     
 from eb_jepa.nn_utils import init_module_weights
 
@@ -25,84 +26,6 @@ class Projector(nn.Module):
 
     def forward(self, x):
         return self.net(x)
-
-
-# class MobileNetV2Encoder(nn.Module):
-#     """MobileNetV2 image encoder: [B, C, H, W] -> [B, D] (projected).
-
-#     Backbone: torchvision mobilenet_v2 (randomly initialized), classifier
-#     stripped, followed by global average pooling and a 1- or 2-layer MLP
-#     projector. Supports variable input sizes (e.g. 64 to 224+) since pooling
-#     is adaptive.
-#     """
-
-#     def __init__(
-#         self,
-#         width_mult=1.0,
-#         input_channels=3,
-#         projector_output_dim=512,
-#         projector_layers=2,
-#         projector_hidden_dim=2048,
-#         final_ln=True,
-#     ):
-#         super().__init__()
-#         assert projector_layers in (1, 2), "projector_layers must be 1 or 2"
-#         if projector_layers == 2:
-#             assert projector_hidden_dim is not None, (
-#                 "projector_hidden_dim must be set when projector_layers=2"
-#             )
-
-#         backbone = mobilenet_v2(weights=None, width_mult=width_mult)
-#         self.features = backbone.features
-#         if input_channels != 3:
-#             first_conv = self.features[0][0]
-#             self.features[0][0] = nn.Conv2d(
-#                 input_channels,
-#                 first_conv.out_channels,
-#                 kernel_size=first_conv.kernel_size,
-#                 stride=first_conv.stride,
-#                 padding=first_conv.padding,
-#                 bias=first_conv.bias is not None,
-#             )
-#         feature_dim = backbone.last_channel  # 1280 at width_mult=1.0
-
-#         self.feature_dim = feature_dim
-#         self.projector_output_dim = projector_output_dim
-
-#         if projector_layers == 1:
-#             self.projector = nn.Linear(feature_dim, projector_output_dim)
-#         else:
-#             self.projector = nn.Sequential(
-#                 nn.Linear(feature_dim, projector_hidden_dim),
-#                 nn.ReLU(inplace=True),
-#                 nn.Linear(projector_hidden_dim, projector_output_dim),
-#             )
-#         self.final_ln = nn.LayerNorm(projector_output_dim) if final_ln else nn.Identity()
-
-#     def forward(self, x):
-#         """
-#         Args:
-#             x: [B, C, H, W]
-#         Returns:
-#             out: [B, projector_output_dim]
-#         """
-#         # 1. Extract features -> [B, C, H, W]
-#         features = self.features(x)
-        
-#         # 2. Global Average Pool spatial dimensions -> [B, C, 1, 1]
-#         pooled = F.adaptive_avg_pool2d(features, (1, 1))
-        
-#         # 3. Flatten to [B, C] and pass through the MLP heads
-#         flattened = pooled.flatten(1)
-#         projected = self.projector(flattened)
-#         normalized = self.final_ln(projected)
-#         return normalized
-
-
-import torch
-import torch.nn as nn
-from torchvision.models import mobilenet_v2
-from torchvision.ops import Conv2dNormActivation
 
 
 class CustomInvertedResidual(nn.Module):
@@ -165,42 +88,6 @@ class CustomInvertedResidual(nn.Module):
         return self.conv(x)
 
 
-
-# class MobileNetV2Encoder(nn.Module):
-#     """MobileNetV2 image encoder with custom layer 18 replacement."""
-
-#     def __init__(self, width_mult: float = 1.0):
-#         super().__init__()
-
-#         backbone = mobilenet_v2(weights=None, width_mult=width_mult)
-
-#         self.features = backbone.features
-
-#         backbone.features[18] = nn.Identity()
-
-#         self.feature_dim = 1024
-        
-
-#         # Calculate flattened dimension dynamically based on dummy input
-#         with torch.no_grad():
-#             dummy = torch.zeros(1, 3, 128, 128)
-#             feat_shape = self.features(dummy).shape
-#             flattened_dim = feat_shape[1] * feat_shape[2] * feat_shape[3]
-#         print(f"Flattened feature dimension: {flattened_dim}")
-
-#         self.proj = nn.Sequential(
-#             nn.Linear(flattened_dim, 2048),
-#             nn.ReLU(inplace=True),
-#             nn.Linear(2048, self.feature_dim),
-#         )
-
-
-#     def forward(self, x: torch.Tensor) -> torch.Tensor:
-#         features = self.features(x)
-#         flattened = features.flatten(1)
-#         return self.proj(flattened)
-
-
 class MobileNetV2Encoder(nn.Module):
     """MobileNetV2 image encoder with custom layer 18 replacement."""
 
@@ -252,46 +139,6 @@ class MobileNetV2Encoder(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.features(x).flatten(1)
 
-# class MobileNetV2Encoder(nn.Module):
-#     """MobileNetV2 image encoder: [B, C, H, W] -> [B, D] (projected).
-
-#     Backbone: torchvision mobilenet_v2 (randomly initialized), classifier
-#     stripped, followed by flattening.
-#     """
-
-#     def __init__(
-#         self,
-#         width_mult=1.0,
-#     ):
-#         super().__init__()
-
-#         backbone = mobilenet_v2(weights=None, width_mult=width_mult)
-#         self.features = backbone.features
-#         feature_dim = backbone.last_channel  # 1280 at width_mult=1.0
-
-#         self.feature_dim = 1024
-
-#         self.proj = nn.Sequential(
-#             nn.Linear(feature_dim * 4 * 4, 2048),
-#             nn.ReLU(inplace=True),
-#             nn.Linear(2048, self.feature_dim),
-#         )
-
-#     def forward(self, x):
-#         """
-#         Args:
-#             x: [B, C, 128, 128]
-#         Returns:
-#             out: [B, projector_output_dim]
-#         """
-#         # 1. Extract features -> [B, C, 2, 2] (for 128x128 input)
-#         features = self.features(x)
-        
-#         # 2. Flatten spatial dimensions -> [B, C * 2 * 2]
-#         flattened = features.flatten(1)
-
-#         return self.proj(flattened)
-
 
 class LinearProbeHead(nn.Module):
     def __init__(self, in_dim, num_classes):
@@ -336,11 +183,13 @@ class InverseDynamicsModel(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
             nn.Linear(hidden_dim, action_dim),
         )
         self.apply(init_module_weights)
 
-    def forward(self, ref_state, goal_state):
+    def _single_forward(self, ref_state, goal_state):
         """
         Args:
             ref_state: Reference state, shape [B, D]
@@ -350,6 +199,11 @@ class InverseDynamicsModel(nn.Module):
         """
         combined_states = torch.cat([ref_state, goal_state], dim=1)
         return self.model(combined_states)
+    
+    def forward(self, ref_state, goal_state):
+        pos = self._single_forward(ref_state, goal_state)
+        neg = self._single_forward(goal_state, ref_state)
+        return 0.5 * (pos - neg)
 
 
 class GatedPredictor(nn.Module):
@@ -434,9 +288,70 @@ class ConvProbeHead(nn.Module):
         return self.fc(flattened)
 
 
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_dim, out_dim, dropout=0.1):
+        super().__init__()
+        self.fc1 = nn.Linear(in_dim, out_dim)
+        self.norm = nn.LayerNorm(out_dim)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(out_dim, out_dim)
+        self.drop = nn.Dropout(dropout)
+        self.shortcut = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
+
+    def forward(self, x):
+        res = self.shortcut(x)
+        x = self.act(self.norm(self.fc1(x)))
+        x = self.drop(self.fc2(x))
+        return self.act(x + res)
+
+class RelativeDistancePredictor(nn.Module):
+    def __init__(self, emb_dim=1024, out_dim=2):
+        super().__init__()
+        # Input dim is 3 * emb_dim due to pairwise fusion [diff, abs_diff, prod]
+        in_dim = emb_dim * 3
+        
+        self.in_proj = nn.Sequential(
+            nn.Linear(in_dim, 512),
+            nn.LayerNorm(512),
+            nn.GELU(),
+            nn.Dropout(0.1)
+        )
+        
+        self.res1 = ResidualBlock(512, 512)
+        self.res2 = ResidualBlock(512, 256)
+        
+        self.head = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.GELU(),
+            nn.Linear(128, out_dim)
+        )
+
+    def _forward_single(self, z1, z2):
+        diff = z1 - z2
+        abs_diff = torch.abs(diff)
+        prod = z1 * z2
+        h = torch.cat([diff, abs_diff, prod], dim=-1)
+        
+        feat = self.in_proj(h)
+        feat = self.res1(feat)
+        feat = self.res2(feat)
+        return self.head(feat)
+
+    def forward(self, z1, z2):
+        # Enforce anti-symmetry: f(z1, z2) == -f(z2, z1)
+        pos = self._forward_single(z1, z2)
+        neg = self._forward_single(z2, z1)
+        return 0.5 * (pos - neg)
+    
+
+
 if __name__ == "__main__":
     input = torch.rand((1, 3, 96, 96))
     print(f"{input.shape = }")
     backbone = mobilenet_v2(weights=None, width_mult=1.0)
     output = backbone.features(input)
     print(f"{output.shape = }")
+
+

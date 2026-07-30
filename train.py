@@ -252,8 +252,8 @@ def run(
         logger.info(f"Evaluation complete. Results: {eval_results}")
         return eval_results
 
-    eval_results = run_patch_localization_eval(jepa, cfg, device, val_loader)
-    logger.info(f"Evaluation completed on randomly initialized model as a baseline. Results: {eval_results}")
+    # eval_results = run_patch_localization_eval(jepa, cfg, device, val_loader, vis_dir=str(folder / "random_eval_visualizations"),)
+    # logger.info(f"Evaluation completed on randomly initialized model as a baseline. Results: {eval_results}")
 
     # -- TRAINING LOOP
     for epoch in range(start_epoch, cfg.optim.epochs):

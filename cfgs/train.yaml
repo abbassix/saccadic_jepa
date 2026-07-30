@@ -1,5 +1,5 @@
 # cfgs/train.yaml
-note: MobileNetV2, 17 (s=2, wo BN) and 18 (k=2, wo BN), +19 (k=1), No projection; IDM (640->512-512->2), all classes, img_size 320!
+note: MobileNetV2, B 1024, IDM 4-layer with 1024 units (vs 3-layer with 512), double forward pass at IDM + MSE
 
 logging:
   log_wandb: true
@@ -9,7 +9,7 @@ logging:
   save_every_n_epochs: 10
   tqdm_silent: false
 meta:
-  device: "cuda:3"
+  device: "cuda"
   model_folder: 
   load_model: false
   enable_eval: true
@@ -31,7 +31,7 @@ model:
   compile: false
   encoder_architecture: mobilenetv2
   idm:
-    hidden_dim: 512
+    hidden_dim: 1024
   regularizer:
     type: vicreg  # vicreg, sigreg
     # bcs_scoeff: 10.0
@@ -42,7 +42,7 @@ model:
     use_proj: false
     idm_after_proj: false
 optim:
-  epochs: 1000
+  epochs: 300
   lr: 1.e-4
   enc_lr: 1.e-4
   proj_lr: 1.e-4

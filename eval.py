@@ -149,10 +149,12 @@ def _load_sample_with_full_image(dataset, idx):
     path, _ = dataset.samples[idx]
     img = Image.open(path).convert("RGB")
     img = dataset.transform(img)
+    
+    _, height, width = img.shape
 
     rng = random.Random(idx)
-    x_ref, y_ref = dataset._get_random_crop_bounds(rng)
-    x_goal, y_goal = dataset._get_random_crop_bounds(rng)
+    x_ref, y_ref = dataset._get_random_crop_bounds(width, height, rng)
+    x_goal, y_goal = dataset._get_random_crop_bounds(width, height, rng)
 
     crop_size = dataset.crop_size
     ref_crop = img[:, y_ref : y_ref + crop_size, x_ref : x_ref + crop_size]
@@ -378,6 +380,7 @@ def run_patch_localization_eval(
             desc="Validating Locating...",
             disable=cfg.logging.get("tqdm_silent", False),
             bar_format='{desc} | {n_fmt}/{total_fmt} batches | {postfix}',
+            leave=False,
         )
     # Compatible unpacking format matching our 5-tuple output
     for idx, (ref_crop, offset_px, goal_crop, ref_origin, goal_origin) in pbar:
@@ -435,6 +438,8 @@ def run_patch_localization_eval(
 
             pred_ratios.append(pred_ratio[valid].cpu())
 
+    pbar.close()
+    
     def _stats(x, prefix):
         if len(x) == 0:
             return {}
@@ -489,6 +494,6 @@ def run_patch_localization_eval(
             has_predictor=has_predictor,
             vis_out_dir=vis_out_dir,
         )
-        logger.info(f"Saved {len(vis_indices)} localization visualizations to {vis_out_dir.resolve()}")
+        # logger.info(f"Saved {len(vis_indices)} localization visualizations to {vis_out_dir.resolve()}")
 
     return results

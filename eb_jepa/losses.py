@@ -105,10 +105,13 @@ class VC_IDM_Regularizer(nn.Module):
         """
         ref_proj = self.projector(ref_state)
 
-        if self.idm_after_proj:
-            idm_loss = self.idm_loss_fn(ref_proj, self.projector(goal_state), actions)
+        if self.idm_loss_fn is not None:
+            if self.idm_after_proj:
+                idm_loss = self.idm_loss_fn(ref_proj, self.projector(goal_state), actions)
+            else:
+                idm_loss = self.idm_loss_fn(ref_state, goal_state, actions)
         else:
-            idm_loss = self.idm_loss_fn(ref_state, goal_state, actions)
+            idm_loss = torch.zeros_like(goal_state.sum())
 
         std_loss = self.std_loss_fn(ref_proj)
         cov_loss = self.cov_loss_fn(ref_proj)
