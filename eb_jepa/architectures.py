@@ -283,7 +283,7 @@ class InverseDynamicsModel(nn.Module):
 
 
 if __name__ == "__main__":
-    input = torch.rand((1, 3, 96, 96))
+    input = torch.rand((1, 3, 128, 128))
     print(f"{input.shape = }")
     backbone = mobilenet_v2(weights=None, width_mult=1.0)
     output = backbone.features(input)
