@@ -39,7 +39,6 @@ class CustomInvertedResidual(nn.Module):
         expand_ratio: float = 6,
         kernel_size: int = 2,
         padding: int = 1,
-        batch_norm: bool = True
     ):
         super().__init__()
         self.stride = stride
@@ -55,7 +54,7 @@ class CustomInvertedResidual(nn.Module):
                     inp,
                     hidden_dim,
                     kernel_size=1,
-                    norm_layer=nn.BatchNorm2d if batch_norm else nn.Identity,
+                    norm_layer=nn.BatchNorm2d,
                     activation_layer=nn.ReLU6,
                 )
             )
@@ -69,7 +68,7 @@ class CustomInvertedResidual(nn.Module):
                 stride=stride,
                 padding=padding,
                 groups=hidden_dim,
-                norm_layer=nn.BatchNorm2d if batch_norm else nn.Identity,
+                norm_layer=nn.BatchNorm2d,
                 activation_layer=nn.ReLU6,
             )
         )
@@ -77,7 +76,7 @@ class CustomInvertedResidual(nn.Module):
         # 3. Projection phase (Linear 1x1 Conv)
         layers.extend([
             nn.Conv2d(hidden_dim, oup, kernel_size=1, stride=1, bias=False),
-            nn.BatchNorm2d(oup) if batch_norm else nn.Identity(oup),
+            nn.BatchNorm2d(oup),
         ])
 
         self.conv = nn.Sequential(*layers)
@@ -100,21 +99,18 @@ class MobileNetV2Encoder(nn.Module):
         in_channels = int(160 * width_mult)
         out_channels = in_channels * 2
 
-        # Replace layer (17) with custom InvertedResidual
-        backbone.features[17] = CustomInvertedResidual(
+        # Replace layer (17) with InvertedResidual stride=2 to downsample
+        backbone.features[17] = InvertedResidual(
             inp=in_channels,
             oup=out_channels,
             stride=2,
             expand_ratio=6,
-            kernel_size=3,
-            padding=1,
-            batch_norm=False,
         )
 
         in_channels = out_channels
         out_channels = in_channels * 2
 
-        # Replace layer (18) with custom InvertedResidual
+        # Replace layer (18) with custom InvertedResidual where kernel_size=2, padding=0 to have a 1x1 output
         backbone.features[18] = CustomInvertedResidual(
             inp=in_channels,
             oup=out_channels,
@@ -122,7 +118,6 @@ class MobileNetV2Encoder(nn.Module):
             expand_ratio=6,
             kernel_size=2,
             padding=0,
-            batch_norm=False,
         )
 
         in_channels = out_channels
@@ -148,62 +143,6 @@ class LinearProbeHead(nn.Module):
         pooled = F.adaptive_avg_pool2d(feat_map, (1, 1))  # [B, C, 1, 1]
         flattened = pooled.flatten(1)
         return self.fc(flattened)
-
-
-class StatePredictor(nn.Module):
-    """Single-step predictor: (state, action) -> next_state, via GRUCell."""
-
-    def __init__(self, hidden_size: int = 512, action_dim: int = 2, final_ln=None):
-        super().__init__()
-        self.cell = nn.GRUCell(input_size=action_dim, hidden_size=hidden_size)
-        self.final_ln = final_ln if final_ln is not None else nn.Identity()
-
-    def forward(self, ref_state, action):
-        """
-        Args:
-            ref_state: [B, D]
-            action: [B, A]
-        Returns:
-            pred_state: [B, D]
-        """
-        pred_state = self.cell(action, ref_state)
-        return self.final_ln(pred_state)
-
-
-class InverseDynamicsModel(nn.Module):
-    """
-    Predicts the action that caused a transition from ref_state to goal_state.
-    Used as auxiliary task for representation learning.
-    """
-
-    def __init__(self, state_dim: int, hidden_dim: int, action_dim: int):
-        super().__init__()
-        self.model = nn.Sequential(
-            nn.Linear(state_dim * 2, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
-        )
-        self.apply(init_module_weights)
-
-    def _single_forward(self, ref_state, goal_state):
-        """
-        Args:
-            ref_state: Reference state, shape [B, D]
-            goal_state: Goal state, shape [B, D]
-        Returns:
-            predicted_action: Action predicted to transform ref_state to goal_state, shape [B, A]
-        """
-        combined_states = torch.cat([ref_state, goal_state], dim=1)
-        return self.model(combined_states)
-    
-    def forward(self, ref_state, goal_state):
-        pos = self._single_forward(ref_state, goal_state)
-        neg = self._single_forward(goal_state, ref_state)
-        return 0.5 * (pos - neg)
 
 
 class GatedPredictor(nn.Module):
@@ -274,7 +213,6 @@ class GatedPredictor(nn.Module):
         return mu, log_var
 
 
-
 class ConvProbeHead(nn.Module):
     def __init__(self, in_channels, num_classes, out_channels=None, expand_ratio=6):
         super().__init__()
@@ -286,8 +224,6 @@ class ConvProbeHead(nn.Module):
         pooled = F.adaptive_avg_pool2d(new_feat_map, (1, 1))
         flattened = pooled.flatten(1)
         return self.fc(flattened)
-
-
 
 
 class ResidualBlock(nn.Module):
@@ -306,26 +242,27 @@ class ResidualBlock(nn.Module):
         x = self.drop(self.fc2(x))
         return self.act(x + res)
 
-class RelativeDistancePredictor(nn.Module):
-    def __init__(self, emb_dim=1024, out_dim=2):
+
+class InverseDynamicsModel(nn.Module):
+    def __init__(self, state_dim: int, hidden_dim: int, action_dim: int):
         super().__init__()
         # Input dim is 3 * emb_dim due to pairwise fusion [diff, abs_diff, prod]
-        in_dim = emb_dim * 3
+        in_dim = state_dim * 3
         
         self.in_proj = nn.Sequential(
-            nn.Linear(in_dim, 512),
-            nn.LayerNorm(512),
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Dropout(0.1)
         )
         
-        self.res1 = ResidualBlock(512, 512)
-        self.res2 = ResidualBlock(512, 256)
+        self.res1 = ResidualBlock(hidden_dim, hidden_dim)
+        self.res2 = ResidualBlock(hidden_dim, hidden_dim // 2)
         
         self.head = nn.Sequential(
-            nn.Linear(256, 128),
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),
             nn.GELU(),
-            nn.Linear(128, out_dim)
+            nn.Linear(hidden_dim // 4, action_dim)
         )
 
     def _forward_single(self, z1, z2):
@@ -344,7 +281,6 @@ class RelativeDistancePredictor(nn.Module):
         pos = self._forward_single(z1, z2)
         neg = self._forward_single(z2, z1)
         return 0.5 * (pos - neg)
-    
 
 
 if __name__ == "__main__":
@@ -353,5 +289,3 @@ if __name__ == "__main__":
     backbone = mobilenet_v2(weights=None, width_mult=1.0)
     output = backbone.features(input)
     print(f"{output.shape = }")
-
-

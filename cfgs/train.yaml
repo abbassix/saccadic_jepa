@@ -1,5 +1,5 @@
 # cfgs/train.yaml
-note: MobileNetV2, B 1024, IDM 4-layer with 1024 units (vs 3-layer with 512), double forward pass at IDM + MSE
+note: MobileNetV2, BN in encoder, Detach goal_state to prevent gradients from flowing into the encoder before predcost
 
 logging:
   log_wandb: true

@@ -20,7 +20,6 @@ from eb_jepa.architectures import (
     MobileNetV2Encoder,
     InverseDynamicsModel,
     Projector,
-    StatePredictor,
     GatedPredictor,
 )
 from eb_jepa.datasets.utils import init_data

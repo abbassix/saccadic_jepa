@@ -71,6 +71,7 @@ class JEPA(JEPAbase):
         pred_var = torch.exp(pred_log_var)
 
         # Call the instantiated loss function (input, target, var)
+        goal_state = goal_state.detach()  # Detach goal_state to prevent gradients from flowing into the encoder
         pred_loss = self.predcost(pred_goal_state, goal_state, pred_var)
         
         return reg_loss_dict, pred_loss
