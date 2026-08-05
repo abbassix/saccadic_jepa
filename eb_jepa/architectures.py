@@ -5,8 +5,7 @@ import torch.nn.functional as F
 from torchvision.models import mobilenet_v2
 from torchvision.models.mobilenetv2 import InvertedResidual
 from torchvision.ops import Conv2dNormActivation
-    
-from eb_jepa.nn_utils import init_module_weights
+
 
 
 class Projector(nn.Module):
