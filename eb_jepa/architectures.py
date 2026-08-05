@@ -268,7 +268,7 @@ class InverseDynamicsModel(nn.Module):
     def _forward_single(self, z1, z2):
         diff = z1 - z2
         prod = z1 * z2
-        h = torch.cat([diff, abs_diff, prod], dim=-1)
+        h = torch.cat([diff, prod], dim=-1)
         
         feat = self.in_proj(h)
         feat = self.res1(feat)
