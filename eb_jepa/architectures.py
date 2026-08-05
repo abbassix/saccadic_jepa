@@ -246,8 +246,8 @@ class ResidualBlock(nn.Module):
 class InverseDynamicsModel(nn.Module):
     def __init__(self, state_dim: int, hidden_dim: int, action_dim: int):
         super().__init__()
-        # Input dim is 3 * emb_dim due to pairwise fusion [diff, abs_diff, prod]
-        in_dim = state_dim * 3
+        # Input dim is 2 * emb_dim due to pairwise fusion [diff, prod]
+        in_dim = state_dim * 2
         
         self.in_proj = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
@@ -267,7 +267,6 @@ class InverseDynamicsModel(nn.Module):
 
     def _forward_single(self, z1, z2):
         diff = z1 - z2
-        abs_diff = torch.abs(diff)
         prod = z1 * z2
         h = torch.cat([diff, abs_diff, prod], dim=-1)
         
