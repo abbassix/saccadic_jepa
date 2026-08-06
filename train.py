@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from eb_jepa.architectures import (
     MobileNetV2Encoder,
+    MobileNetV4Encoder,
     InverseDynamicsModel,
     Projector,
     GatedPredictor,
@@ -138,7 +139,7 @@ def run(
 
     # -- ENCODER --
     if cfg.model.encoder_architecture == "mobilenetv2":
-        encoder = MobileNetV2Encoder(
+        encoder = MobileNetV4Encoder(
             width_mult=1.0,
         )
     else:

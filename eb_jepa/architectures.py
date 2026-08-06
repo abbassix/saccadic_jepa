@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torchvision.models import mobilenet_v2
 from torchvision.models.mobilenetv2 import InvertedResidual
 from torchvision.ops import Conv2dNormActivation
+import timm
 
 
 
@@ -132,6 +133,83 @@ class MobileNetV2Encoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.features(x).flatten(1)
+
+
+class EfficientSpatialProjection(nn.Module):
+    """
+    Collapses spatial map (H x W -> 1 x 1) using a learned Depthwise Conv,
+    followed by a Pointwise 1x1 Conv to project channels (in_channels -> out_channels).
+    """
+    def __init__(self, in_channels: int = 960, out_channels: int = 1280, spatial_size: tuple = (4, 4)):
+        super().__init__()
+        # 1. Depthwise Conv: Learns spatial weighting to collapse H x W -> 1 x 1
+        self.dw_conv = nn.Conv2d(
+            in_channels,
+            in_channels,
+            kernel_size=spatial_size,
+            stride=spatial_size,
+            groups=in_channels,
+            bias=False
+        )
+        self.bn1 = nn.BatchNorm2d(in_channels)
+        self.act1 = nn.SiLU(inplace=True)
+        
+        # 2. Pointwise Conv: Efficiently expands 960 channels -> 1280
+        self.pw_conv = nn.Conv2d(
+            in_channels, 
+            out_channels, 
+            kernel_size=1, 
+            bias=False
+        )
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.act2 = nn.SiLU(inplace=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.act1(self.bn1(self.dw_conv(x)))
+        x = self.act2(self.bn2(self.pw_conv(x)))
+        return x  # Output Shape: [B, 1280, 1, 1]
+
+
+class MobileNetV4Encoder(nn.Module):
+    """MobileNetV4 image encoder using timm feature extraction."""
+    
+    def __init__(self, width_mult: float = 1.0, img_size: int = 128):
+        super().__init__()
+        
+        # 1. Store timm backbone as an internal attribute
+        self.backbone = timm.create_model(
+            'mobilenetv4_conv_small', 
+            pretrained=False, 
+            features_only=True,
+            out_indices=(4,)
+        )
+        
+        # Get the feature channel count for stage 4 dynamically
+        in_channels = self.backbone.feature_info.channels()[-1]  # 960 for mnv4 small
+        
+        # Determine spatial feature size (Stage 5 downsamples input by 32x)
+        spatial_dim = img_size // 32  # For 128x128 -> 4x4
+        
+        # 2. Add EfficientSpatialProjection to collapse spatial dimensions and project channels
+        self.projection = EfficientSpatialProjection(
+            in_channels=960,
+            out_channels=1280,
+            spatial_size=(spatial_dim, spatial_dim)  # Assuming final feature map is 4x4
+        )
+
+        # Verify parameters
+        num_params = sum(p.numel() for p in self.backbone.parameters())
+        print(f"Backbone Parameters: {num_params / 1e6:.2f}M")
+        num_params = sum(p.numel() for p in self.projection.parameters())
+        print(f"Projection Parameters: {num_params / 1e6:.2f}M")
+
+    def forward(self, x: torch.Tensor):
+        # Extract 960-channel feature map: [B, 960, H/32, W/32]
+        feat_map = self.backbone(x)[0]  # Shape: (B, 960, H/32, W/32) -> (B, 960, 4, 4) for 128x128
+        
+        # Project spatially & channel-wise: [B, 1280, 1, 1]
+        embedding = self.projection(feat_map)
+        return embedding
 
 
 class LinearProbeHead(nn.Module):
@@ -282,8 +360,10 @@ class InverseDynamicsModel(nn.Module):
 
 
 if __name__ == "__main__":
-    input = torch.rand((1, 3, 128, 128))
-    print(f"{input.shape = }")
-    backbone = mobilenet_v2(weights=None, width_mult=1.0)
-    output = backbone.features(input)
-    print(f"{output.shape = }")
+    encoder = MobileNetV4Encoder()
+    
+    dummy_input = torch.rand(2, 3, 128, 128)
+    dummy_outputs = encoder(dummy_input)
+    
+    print(f"Dummy Input Shape: {dummy_input.shape}")
+    print(f"Dummy Output Shape: {dummy_outputs.shape}")  # Expected: [1
