@@ -81,12 +81,19 @@ class JEPAProbe(nn.Module):
     """JEPA with a trainable prediction head. The JEPA encoder is kept fixed.
     Head could be a linear layer or a conv layer followed by a linear layer."""
 
-    def __init__(self, jepa, head, hcost):
+    def __init__(self, jepa, head, hcost, n_layers_to_remove=2):
         """Initialize with a frozen JEPA, prediction head, and head loss function."""
         super().__init__()
         self.jepa = jepa
         self.head = head
         self.hcost = hcost
+
+        if n_layers_to_remove == 1:
+            # Remove the 19th layer from the encoder to get the feature map before the final projection layer
+            self.jepa.encoder.features = self.jepa.encoder.features[:-1]
+        elif n_layers_to_remove == 2:
+            # Remove the 18th and 19th layers from the encoder to get the feature map before the final projection layer
+            self.jepa.encoder.features = self.jepa.encoder.features[:-2]
 
     @torch.no_grad()
     def infer(self, observation):

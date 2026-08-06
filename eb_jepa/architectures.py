@@ -178,7 +178,7 @@ class MobileNetV4Encoder(nn.Module):
         
         # 1. Store timm backbone as an internal attribute
         self.backbone = timm.create_model(
-            'mobilenetv4_conv_small', 
+            'mobilenetv4_conv_medium', 
             pretrained=False, 
             features_only=True,
             out_indices=(4,)
@@ -192,10 +192,12 @@ class MobileNetV4Encoder(nn.Module):
         
         # 2. Add EfficientSpatialProjection to collapse spatial dimensions and project channels
         self.projection = EfficientSpatialProjection(
-            in_channels=960,
+            in_channels=in_channels,
             out_channels=1280,
             spatial_size=(spatial_dim, spatial_dim)  # Assuming final feature map is 4x4
         )
+
+        self.feature_dim = 1280  # Final embedding dimension after projection
 
         # Verify parameters
         num_params = sum(p.numel() for p in self.backbone.parameters())
@@ -209,7 +211,7 @@ class MobileNetV4Encoder(nn.Module):
         
         # Project spatially & channel-wise: [B, 1280, 1, 1]
         embedding = self.projection(feat_map)
-        return embedding
+        return embedding.flatten(1)  # Return shape: [B, 1280]
 
 
 class LinearProbeHead(nn.Module):
@@ -366,4 +368,4 @@ if __name__ == "__main__":
     dummy_outputs = encoder(dummy_input)
     
     print(f"Dummy Input Shape: {dummy_input.shape}")
-    print(f"Dummy Output Shape: {dummy_outputs.shape}")  # Expected: [1
+    print(f"Dummy Output Shape: {dummy_outputs.shape}")  # Expected: [2, 1280, 1, 1]

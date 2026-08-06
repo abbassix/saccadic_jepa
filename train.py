@@ -139,6 +139,10 @@ def run(
 
     # -- ENCODER --
     if cfg.model.encoder_architecture == "mobilenetv2":
+        encoder = MobileNetV2Encoder(
+            width_mult=1.0,
+        )
+    elif cfg.model.encoder_architecture == "mobilenetv4":
         encoder = MobileNetV4Encoder(
             width_mult=1.0,
         )
