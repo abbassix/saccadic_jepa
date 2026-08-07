@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from torchvision.models import mobilenet_v2
 from torchvision.models.mobilenetv2 import InvertedResidual
 from torchvision.ops import Conv2dNormActivation
@@ -359,6 +360,73 @@ class InverseDynamicsModel(nn.Module):
         pos = self._forward_single(z1, z2)
         neg = self._forward_single(z2, z1)
         return 0.5 * (pos - neg)
+
+
+class FourierPositionalEncoding(nn.Module):
+    """Maps low-dim continuous coordinates to high-dim spatial frequencies."""
+    def __init__(self, input_dim: int = 2, num_bands: int = 16, max_freq: float = 10.0):
+        super().__init__()
+        scales = torch.logspace(0, np.log10(max_freq), num_bands)
+        self.register_buffer("scales", scales)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: [B, 2] -> [B, 2, num_bands]
+        x_proj = x.unsqueeze(-1) * self.scales * np.pi
+        return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1).flatten(start_dim=1)
+
+
+class ForwardDynamicsModel(nn.Module):
+    def __init__(
+        self,
+        state_dim: int,
+        hidden_dim: int,
+        num_bands: int = 16,
+        min_log_var: float = -6.0,
+        max_log_var: float = 2.0
+    ):
+        super().__init__()
+        self.min_log_var = min_log_var
+        self.max_log_var = max_log_var
+        
+        self.pe = FourierPositionalEncoding(input_dim=2, num_bands=num_bands)
+        pos_dim = 2 * num_bands * 2
+        
+        self.pos_proj = nn.Sequential(
+            nn.Linear(pos_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, hidden_dim // 2)
+        )
+        
+        in_dim = state_dim + (hidden_dim // 2)
+        self.in_proj = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU()
+        )
+        
+        self.res1 = ResidualBlock(hidden_dim, hidden_dim)
+        self.res2 = ResidualBlock(hidden_dim, hidden_dim)
+        
+        # Dual output heads: Mean offset (Delta z) and Log-Variance
+        self.mean_head = nn.Linear(hidden_dim, state_dim)
+        self.log_var_head = nn.Linear(hidden_dim, state_dim)
+
+    def forward(self, z1: torch.Tensor, delta_xy: torch.Tensor):
+        pos_feat = self.pos_proj(self.pe(delta_xy))
+        h = torch.cat([z1, pos_feat], dim=-1)
+        h = self.in_proj(h)
+        h = self.res1(h)
+        h = self.res2(h)
+        
+        # Mean prediction (Residual shift)
+        mu = z1 + self.mean_head(h)
+        
+        # Bounded log-variance for stability
+        log_var = self.log_var_head(h)
+        log_var = torch.clamp(log_var, self.min_log_var, self.max_log_var)
+        var = torch.exp(log_var)
+        
+        return mu, var
 
 
 if __name__ == "__main__":

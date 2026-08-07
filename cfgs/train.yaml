@@ -1,5 +1,5 @@
 # cfgs/train.yaml
-note: MobileNetV2, BN in encoder, Detach goal_state to prevent gradients from flowing into the encoder before predcost
+note: MobileNetV4, with ForwardDynamicsModel
 
 logging:
   log_wandb: true
@@ -31,6 +31,8 @@ model:
   compile: false
   encoder_architecture: mobilenetv2
   idm:
+    hidden_dim: 1024
+  predictor:
     hidden_dim: 1024
   regularizer:
     type: vicreg  # vicreg, sigreg

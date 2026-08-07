@@ -20,6 +20,7 @@ from eb_jepa.architectures import (
     MobileNetV2Encoder,
     MobileNetV4Encoder,
     InverseDynamicsModel,
+    ForwardDynamicsModel,
     Projector,
     GatedPredictor,
 )
@@ -161,7 +162,11 @@ def run(
 
     # -- PREDICTOR --
     # predictor = StatePredictor(hidden_size=encoder.projector_output_dim, action_dim=action_dim)
-    predictor = GatedPredictor(state_size=encoder.feature_dim, action_size=action_dim)
+    # predictor = GatedPredictor(state_size=encoder.feature_dim, action_size=action_dim)
+    predictor = ForwardDynamicsModel(
+        state_dim=projector.out_dim if cfg.model.regularizer.idm_after_proj else encoder.feature_dim,
+        hidden_dim=cfg.model.predictor.hidden_dim,
+    ).to(device)
     
     # -- IDM --
     idm = InverseDynamicsModel(
