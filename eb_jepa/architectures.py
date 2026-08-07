@@ -215,16 +215,6 @@ class MobileNetV4Encoder(nn.Module):
         return embedding.flatten(1)  # Return shape: [B, 1280]
 
 
-class LinearProbeHead(nn.Module):
-    def __init__(self, in_dim, num_classes):
-        super().__init__()
-        self.fc = nn.Linear(in_dim, num_classes)
-    def forward(self, feat_map):          # [B, C, H, W]
-        pooled = F.adaptive_avg_pool2d(feat_map, (1, 1))  # [B, C, 1, 1]
-        flattened = pooled.flatten(1)
-        return self.fc(flattened)
-
-
 class GatedPredictor(nn.Module):
     """
     GatedPredictor with independent reset gates (2D) for state mean (mu) and variance (log_var),
@@ -291,6 +281,16 @@ class GatedPredictor(nn.Module):
         log_var = torch.clamp(c_var, min=-10.0, max=5.0)
 
         return mu, log_var
+
+
+class LinearProbeHead(nn.Module):
+    def __init__(self, in_dim, num_classes):
+        super().__init__()
+        self.fc = nn.Linear(in_dim, num_classes)
+    def forward(self, feat_map):          # [B, C, H, W]
+        pooled = F.adaptive_avg_pool2d(feat_map, (1, 1))  # [B, C, 1, 1]
+        flattened = pooled.flatten(1)
+        return self.fc(flattened)
 
 
 class ConvProbeHead(nn.Module):
