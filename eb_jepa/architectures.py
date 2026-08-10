@@ -115,7 +115,7 @@ class MobileNetV2Encoder(nn.Module):
         backbone.features[18] = CustomInvertedResidual(
             inp=in_channels,
             oup=out_channels,
-            stride=1,
+            stride=2,
             expand_ratio=6,
             kernel_size=2,
             padding=0,
@@ -375,11 +375,96 @@ class FourierPositionalEncoding(nn.Module):
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1).flatten(start_dim=1)
 
 
+# class ForwardDynamicsModel(nn.Module):
+#     def __init__(
+#         self,
+#         state_dim: int,
+#         hidden_dim: int,
+#         num_bands: int = 16,
+#         min_log_var: float = -6.0,
+#         max_log_var: float = 2.0
+#     ):
+#         super().__init__()
+#         self.min_log_var = min_log_var
+#         self.max_log_var = max_log_var
+        
+#         self.pe = FourierPositionalEncoding(input_dim=2, num_bands=num_bands)
+#         pos_dim = 2 * num_bands * 2
+        
+#         self.pos_proj = nn.Sequential(
+#             nn.Linear(pos_dim, hidden_dim // 2),
+#             nn.GELU(),
+#             nn.Linear(hidden_dim // 2, hidden_dim // 2)
+#         )
+        
+#         in_dim = state_dim + (hidden_dim // 2)
+#         self.in_proj = nn.Sequential(
+#             nn.Linear(in_dim, hidden_dim),
+#             nn.LayerNorm(hidden_dim),
+#             nn.GELU()
+#         )
+        
+#         self.res1 = ResidualBlock(hidden_dim, hidden_dim)
+#         self.res2 = ResidualBlock(hidden_dim, hidden_dim)
+        
+#         # Dual output heads: Mean offset (Delta z) and Log-Variance
+#         self.mean_head = nn.Linear(hidden_dim, state_dim)
+#         self.log_var_head = nn.Linear(hidden_dim, state_dim)
+
+#     def forward(self, z1: torch.Tensor, delta_xy: torch.Tensor):
+#         pos_feat = self.pos_proj(self.pe(delta_xy))
+#         h = torch.cat([z1, pos_feat], dim=-1)
+#         h = self.in_proj(h)
+#         h = self.res1(h)
+#         h = self.res2(h)
+        
+#         # Mean prediction (Residual shift)
+#         mu = z1 + self.mean_head(h)
+        
+#         # Bounded log-variance for stability
+#         log_var = self.log_var_head(h)
+#         log_var = torch.clamp(log_var, self.min_log_var, self.max_log_var)
+#         var = torch.exp(log_var)
+        
+#         return mu, var
+
+
+class FiLMResidualBlock(nn.Module):
+    """Residual block modulated by spatial gamma and beta parameters."""
+    def __init__(self, dim: int, cond_dim: int):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.fc1 = nn.Linear(dim, dim)
+        self.act = nn.GELU()
+        
+        self.norm2 = nn.LayerNorm(dim)
+        self.fc2 = nn.Linear(dim, dim)
+        
+        # Generator for affine parameters: affine gamma and beta
+        self.film_generator = nn.Linear(cond_dim, dim * 2)
+
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        res = x
+        
+        # Standard first projection
+        x = self.act(self.fc1(self.norm1(x)))
+        
+        # Generate FiLM scale (gamma) and shift (beta) from spatial condition
+        gamma, beta = self.film_generator(cond).chunk(2, dim=-1)
+        
+        # Modulate features: (1 + gamma) * norm(x) + beta
+        x = self.norm2(x)
+        x = (1.0 + gamma) * x + beta
+        x = self.act(self.fc2(x))
+        
+        return x + res
+
+
 class ForwardDynamicsModel(nn.Module):
     def __init__(
-        self,
-        state_dim: int,
-        hidden_dim: int,
+        self, 
+        state_dim: int, 
+        hidden_dim: int, 
         num_bands: int = 16,
         min_log_var: float = -6.0,
         max_log_var: float = 2.0
@@ -388,42 +473,48 @@ class ForwardDynamicsModel(nn.Module):
         self.min_log_var = min_log_var
         self.max_log_var = max_log_var
         
+        # 1. Coordinate Encoding Path
         self.pe = FourierPositionalEncoding(input_dim=2, num_bands=num_bands)
         pos_dim = 2 * num_bands * 2
         
-        self.pos_proj = nn.Sequential(
-            nn.Linear(pos_dim, hidden_dim // 2),
+        self.cond_net = nn.Sequential(
+            nn.Linear(pos_dim, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_dim // 2, hidden_dim // 2)
+            nn.Linear(hidden_dim, hidden_dim)
         )
         
-        in_dim = state_dim + (hidden_dim // 2)
-        self.in_proj = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU()
-        )
+        # 2. Base Feature Projection
+        self.in_proj = nn.Linear(state_dim, hidden_dim)
         
-        self.res1 = ResidualBlock(hidden_dim, hidden_dim)
-        self.res2 = ResidualBlock(hidden_dim, hidden_dim)
+        # 3. FiLM Modulated Residual Blocks
+        self.film_res1 = FiLMResidualBlock(hidden_dim, cond_dim=hidden_dim)
+        self.film_res2 = FiLMResidualBlock(hidden_dim, cond_dim=hidden_dim)
         
-        # Dual output heads: Mean offset (Delta z) and Log-Variance
+        # 4. Gated Output Heads
+        self.gate_head = nn.Linear(hidden_dim, state_dim)
         self.mean_head = nn.Linear(hidden_dim, state_dim)
         self.log_var_head = nn.Linear(hidden_dim, state_dim)
 
     def forward(self, z1: torch.Tensor, delta_xy: torch.Tensor):
-        pos_feat = self.pos_proj(self.pe(delta_xy))
-        h = torch.cat([z1, pos_feat], dim=-1)
-        h = self.in_proj(h)
-        h = self.res1(h)
-        h = self.res2(h)
+        # Compute spatial conditioning vector
+        cond = self.cond_net(self.pe(delta_xy))
         
-        # Mean prediction (Residual shift)
-        mu = z1 + self.mean_head(h)
+        # Project source embedding z1 into hidden space
+        h = self.in_proj(z1)
         
-        # Bounded log-variance for stability
-        log_var = self.log_var_head(h)
-        log_var = torch.clamp(log_var, self.min_log_var, self.max_log_var)
+        # Modulate feature representations dynamically via FiLM blocks
+        h = self.film_res1(h, cond)
+        h = self.film_res2(h, cond)
+        
+        # Adaptive residual gating: alpha in [0, 1]
+        alpha = torch.sigmoid(self.gate_head(h))
+        delta_z = self.mean_head(h)
+        
+        # Compute mean prediction: alpha * z1 + delta_z
+        mu = alpha * z1 + delta_z
+        
+        # Compute variance prediction
+        log_var = torch.clamp(self.log_var_head(h), self.min_log_var, self.max_log_var)
         var = torch.exp(log_var)
         
         return mu, var

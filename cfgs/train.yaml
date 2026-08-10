@@ -1,5 +1,5 @@
 # cfgs/train.yaml
-note: MobileNetV4, with ForwardDynamicsModel
+note: MobileNetV2, FiLM-based FDM
 
 logging:
   log_wandb: true
