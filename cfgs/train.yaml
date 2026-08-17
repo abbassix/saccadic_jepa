@@ -1,5 +1,5 @@
 # cfgs/train.yaml
-note: MobileNetV2, Residual FDM, No IDM
+note: MobileNetV2, Small FiLMFDM, No IDM
 
 logging:
   log_wandb: true
@@ -37,7 +37,7 @@ model:
   idm:
     hidden_dim:
   predictor:
-    hidden_dim: 1024
+    hidden_dim: 256
   regularizer:
     type: vicreg  # vicreg, sigreg
     # bcs_scoeff: 10.0
