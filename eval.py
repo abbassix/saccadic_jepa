@@ -60,7 +60,7 @@ def _idm_predict_offset(idm_module, projector, idm_after_proj, ref_state, goal_s
         if idm_after_proj
         else idm_module.idm(ref_state, goal_state)
     )
-    return pred
+    return pred[..., :2]  # [B, 2] (dx, dy)
 
 
 def _predictor_grid_search(
@@ -129,7 +129,7 @@ def _predictor_grid_search(
     return best_offset_px, best_mse
 
 
-def _load_sample_with_full_image(dataset, idx):
+def _load_sample_with_full_image(dataset, idx, cfg=None):
     """
     Re-load a single val-split sample directly from disk, replicating
     ImagePatchLocatingDataset's own ref/goal crop sampling exactly (same
@@ -155,6 +155,10 @@ def _load_sample_with_full_image(dataset, idx):
     rng = random.Random(idx)
     x_ref, y_ref = dataset._get_random_crop_bounds(width, height, rng)
     x_goal, y_goal = dataset._get_random_crop_bounds(width, height, rng)
+    # x_ref, y_ref, x_goal, y_goal = dataset._get_random_crop_bounds(width, height, min_dist=96, max_dist=192, center_sigma=35, rng=rng)
+    # min_dist = cfg.data.get("min_distance", 0.0) if cfg is not None else 0.0
+    # sigma = cfg.data.get("sigma", 0.0) if cfg is not None else 0.0
+    # x_ref, y_ref, x_goal, y_goal = dataset._get_random_crop_bounds(width, height, min_distance=min_dist, sigma=sigma, rng=rng)
 
     crop_size = dataset.crop_size
     ref_crop = img[:, y_ref : y_ref + crop_size, x_ref : x_ref + crop_size]
@@ -198,10 +202,12 @@ def _save_localization_visualization(
 
     img_np = (full_image.clamp(0, 1).cpu().permute(1, 2, 0) * 255).byte().numpy()
     canvas_img = Image.fromarray(img_np, mode="RGB")
+    
+    width, height = canvas_img.size
 
     num_text_lines = 1 + int(idm_pred_origin is not None) + int(predictor_pred_origin is not None)
     text_h = 16 * num_text_lines + 8
-    out_img = Image.new("RGB", (img_size, img_size + text_h), color=(0, 0, 0))
+    out_img = Image.new("RGB", (width, height + text_h), color=(0, 0, 0))
     out_img.paste(canvas_img, (0, 0))
     draw = ImageDraw.Draw(out_img)
 
@@ -255,9 +261,9 @@ def _run_visualization_pass(
     """
     max_offset = float(cfg.data.img_size - cfg.data.crop_size)
     crop_size = cfg.data.crop_size
-
+    
     for global_i in sorted(vis_indices):
-        ref_crop, goal_crop, ref_origin, goal_origin, img = _load_sample_with_full_image(dataset, global_i)
+        ref_crop, goal_crop, ref_origin, goal_origin, img = _load_sample_with_full_image(dataset, global_i, cfg)
 
         ref_crop = ref_crop.unsqueeze(0).to(device)
         goal_crop = goal_crop.unsqueeze(0).to(device)
@@ -328,6 +334,7 @@ def run_patch_localization_eval(
     # Fallback dataset instantiation if val_loader isn't provided directly
     if val_loader is None:
         val_dset = ImagePatchLocatingDataset(
+            # config=OmegaConf.merge(cfg.data, {"split": "val", "min_distance": 0.0})
             config=OmegaConf.merge(cfg.data, {"split": "val"})
         )
         val_loader = DataLoader(

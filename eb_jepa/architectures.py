@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
+import math
 from torchvision.models import mobilenet_v2
 from torchvision.models.mobilenetv2 import InvertedResidual
 from torchvision.ops import Conv2dNormActivation
@@ -323,10 +323,48 @@ class ResidualBlock(nn.Module):
         return self.act(x + res)
 
 
+# class InverseDynamicsModel(nn.Module):
+#     def __init__(self, state_dim: int, hidden_dim: int, action_dim: int):
+#         super().__init__()
+#         # Input dim is 2 * emb_dim due to pairwise fusion [diff, prod]
+#         in_dim = state_dim * 2
+        
+#         self.in_proj = nn.Sequential(
+#             nn.Linear(in_dim, hidden_dim),
+#             nn.LayerNorm(hidden_dim),
+#             nn.GELU(),
+#             nn.Dropout(0.1)
+#         )
+        
+#         self.res1 = ResidualBlock(hidden_dim, hidden_dim)
+#         self.res2 = ResidualBlock(hidden_dim, hidden_dim // 2)
+        
+#         self.head = nn.Sequential(
+#             nn.Linear(hidden_dim // 2, hidden_dim // 4),
+#             nn.GELU(),
+#             nn.Linear(hidden_dim // 4, action_dim)
+#         )
+
+#     def _forward_single(self, z1, z2):
+#         # diff = z1 - z2
+#         # prod = z1 * z2
+#         h = torch.cat([z1, z2], dim=-1)
+        
+#         feat = self.in_proj(h)
+#         feat = self.res1(feat)
+#         feat = self.res2(feat)
+#         return self.head(feat)
+
+#     def forward(self, z1, z2):
+#         # Enforce anti-symmetry: f(z1, z2) == -f(z2, z1)
+#         pos = self._forward_single(z1, z2)
+#         neg = self._forward_single(z2, z1)
+#         return 0.5 * (pos - neg)
+
+
 class InverseDynamicsModel(nn.Module):
-    def __init__(self, state_dim: int, hidden_dim: int, action_dim: int):
+    def __init__(self, state_dim: int, hidden_dim: int):
         super().__init__()
-        # Input dim is 2 * emb_dim due to pairwise fusion [diff, prod]
         in_dim = state_dim * 2
         
         self.in_proj = nn.Sequential(
@@ -335,20 +373,18 @@ class InverseDynamicsModel(nn.Module):
             nn.GELU(),
             nn.Dropout(0.1)
         )
-        
         self.res1 = ResidualBlock(hidden_dim, hidden_dim)
         self.res2 = ResidualBlock(hidden_dim, hidden_dim // 2)
         
+        # Output 4 channels: [mu_x, mu_y, log_var_x, log_var_y]
         self.head = nn.Sequential(
             nn.Linear(hidden_dim // 2, hidden_dim // 4),
             nn.GELU(),
-            nn.Linear(hidden_dim // 4, action_dim)
+            nn.Linear(hidden_dim // 4, 4)
         )
 
     def _forward_single(self, z1, z2):
-        diff = z1 - z2
-        prod = z1 * z2
-        h = torch.cat([diff, prod], dim=-1)
+        h = torch.cat([z1, z2], dim=-1)
         
         feat = self.in_proj(h)
         feat = self.res1(feat)
@@ -356,115 +392,37 @@ class InverseDynamicsModel(nn.Module):
         return self.head(feat)
 
     def forward(self, z1, z2):
-        # Enforce anti-symmetry: f(z1, z2) == -f(z2, z1)
-        pos = self._forward_single(z1, z2)
-        neg = self._forward_single(z2, z1)
-        return 0.5 * (pos - neg)
+        pos = self._forward_single(z1, z2)  # [B, 4]
+        neg = self._forward_single(z2, z1)  # [B, 4]
+
+        # 1. Anti-symmetric for predicted coordinates (dx, dy)
+        mu = 0.5 * (pos[:, :2] - neg[:, :2])
+
+        # 2. Symmetric for predicted log-variances (log_var_x, log_var_y)
+        log_var = 0.5 * (pos[:, 2:] + neg[:, 2:])
+
+        return torch.cat([mu, log_var], dim=-1)
 
 
 class FourierPositionalEncoding(nn.Module):
     """Maps low-dim continuous coordinates to high-dim spatial frequencies."""
     def __init__(self, input_dim: int = 2, num_bands: int = 16, max_freq: float = 10.0):
         super().__init__()
-        scales = torch.logspace(0, np.log10(max_freq), num_bands)
+        # Use math.log10 instead of np.log10
+        scales = torch.logspace(0, math.log10(max_freq), num_bands)
         self.register_buffer("scales", scales)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B, 2] -> [B, 2, num_bands]
-        x_proj = x.unsqueeze(-1) * self.scales * np.pi
+        x_proj = x.unsqueeze(-1) * self.scales * math.pi
         return torch.cat([torch.sin(x_proj), torch.cos(x_proj)], dim=-1).flatten(start_dim=1)
-
-
-# class ForwardDynamicsModel(nn.Module):
-#     def __init__(
-#         self,
-#         state_dim: int,
-#         hidden_dim: int,
-#         num_bands: int = 16,
-#         min_log_var: float = -6.0,
-#         max_log_var: float = 2.0
-#     ):
-#         super().__init__()
-#         self.min_log_var = min_log_var
-#         self.max_log_var = max_log_var
-        
-#         self.pe = FourierPositionalEncoding(input_dim=2, num_bands=num_bands)
-#         pos_dim = 2 * num_bands * 2
-        
-#         self.pos_proj = nn.Sequential(
-#             nn.Linear(pos_dim, hidden_dim // 2),
-#             nn.GELU(),
-#             nn.Linear(hidden_dim // 2, hidden_dim // 2)
-#         )
-        
-#         in_dim = state_dim + (hidden_dim // 2)
-#         self.in_proj = nn.Sequential(
-#             nn.Linear(in_dim, hidden_dim),
-#             nn.LayerNorm(hidden_dim),
-#             nn.GELU()
-#         )
-        
-#         self.res1 = ResidualBlock(hidden_dim, hidden_dim)
-#         self.res2 = ResidualBlock(hidden_dim, hidden_dim)
-        
-#         # Dual output heads: Mean offset (Delta z) and Log-Variance
-#         self.mean_head = nn.Linear(hidden_dim, state_dim)
-#         self.log_var_head = nn.Linear(hidden_dim, state_dim)
-
-#     def forward(self, z1: torch.Tensor, delta_xy: torch.Tensor):
-#         pos_feat = self.pos_proj(self.pe(delta_xy))
-#         h = torch.cat([z1, pos_feat], dim=-1)
-#         h = self.in_proj(h)
-#         h = self.res1(h)
-#         h = self.res2(h)
-        
-#         # Mean prediction (Residual shift)
-#         mu = z1 + self.mean_head(h)
-        
-#         # Bounded log-variance for stability
-#         log_var = self.log_var_head(h)
-#         log_var = torch.clamp(log_var, self.min_log_var, self.max_log_var)
-#         var = torch.exp(log_var)
-        
-#         return mu, var
-
-
-class FiLMResidualBlock(nn.Module):
-    """Residual block modulated by spatial gamma and beta parameters."""
-    def __init__(self, dim: int, cond_dim: int):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(dim)
-        self.fc1 = nn.Linear(dim, dim)
-        self.act = nn.GELU()
-        
-        self.norm2 = nn.LayerNorm(dim)
-        self.fc2 = nn.Linear(dim, dim)
-        
-        # Generator for affine parameters: affine gamma and beta
-        self.film_generator = nn.Linear(cond_dim, dim * 2)
-
-    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
-        res = x
-        
-        # Standard first projection
-        x = self.act(self.fc1(self.norm1(x)))
-        
-        # Generate FiLM scale (gamma) and shift (beta) from spatial condition
-        gamma, beta = self.film_generator(cond).chunk(2, dim=-1)
-        
-        # Modulate features: (1 + gamma) * norm(x) + beta
-        x = self.norm2(x)
-        x = (1.0 + gamma) * x + beta
-        x = self.act(self.fc2(x))
-        
-        return x + res
 
 
 class ForwardDynamicsModel(nn.Module):
     def __init__(
-        self, 
-        state_dim: int, 
-        hidden_dim: int, 
+        self,
+        state_dim: int,
+        hidden_dim: int,
         num_bands: int = 16,
         min_log_var: float = -6.0,
         max_log_var: float = 2.0
@@ -473,51 +431,136 @@ class ForwardDynamicsModel(nn.Module):
         self.min_log_var = min_log_var
         self.max_log_var = max_log_var
         
-        # 1. Coordinate Encoding Path
         self.pe = FourierPositionalEncoding(input_dim=2, num_bands=num_bands)
         pos_dim = 2 * num_bands * 2
         
-        self.cond_net = nn.Sequential(
-            nn.Linear(pos_dim, hidden_dim),
+        self.pos_proj = nn.Sequential(
+            nn.Linear(pos_dim, hidden_dim // 2),
             nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim)
+            nn.Linear(hidden_dim // 2, hidden_dim // 2)
         )
         
-        # 2. Base Feature Projection
-        self.in_proj = nn.Linear(state_dim, hidden_dim)
+        in_dim = state_dim + (hidden_dim // 2)
+        self.in_proj = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU()
+        )
         
-        # 3. FiLM Modulated Residual Blocks
-        self.film_res1 = FiLMResidualBlock(hidden_dim, cond_dim=hidden_dim)
-        self.film_res2 = FiLMResidualBlock(hidden_dim, cond_dim=hidden_dim)
+        self.res1 = ResidualBlock(hidden_dim, hidden_dim)
+        self.res2 = ResidualBlock(hidden_dim, hidden_dim)
         
-        # 4. Gated Output Heads
-        self.gate_head = nn.Linear(hidden_dim, state_dim)
+        # Dual output heads: Mean offset (Delta z) and Log-Variance
         self.mean_head = nn.Linear(hidden_dim, state_dim)
         self.log_var_head = nn.Linear(hidden_dim, state_dim)
 
     def forward(self, z1: torch.Tensor, delta_xy: torch.Tensor):
-        # Compute spatial conditioning vector
-        cond = self.cond_net(self.pe(delta_xy))
+        pos_feat = self.pos_proj(self.pe(delta_xy))
+        h = torch.cat([z1, pos_feat], dim=-1)
+        h = self.in_proj(h)
+        h = self.res1(h)
+        h = self.res2(h)
         
-        # Project source embedding z1 into hidden space
-        h = self.in_proj(z1)
+        # Mean prediction (Residual shift)
+        mu = z1 + self.mean_head(h)
         
-        # Modulate feature representations dynamically via FiLM blocks
-        h = self.film_res1(h, cond)
-        h = self.film_res2(h, cond)
-        
-        # Adaptive residual gating: alpha in [0, 1]
-        alpha = torch.sigmoid(self.gate_head(h))
-        delta_z = self.mean_head(h)
-        
-        # Compute mean prediction: alpha * z1 + delta_z
-        mu = alpha * z1 + delta_z
-        
-        # Compute variance prediction
-        log_var = torch.clamp(self.log_var_head(h), self.min_log_var, self.max_log_var)
+        # Bounded log-variance for stability
+        log_var = self.log_var_head(h)
+        log_var = torch.clamp(log_var, self.min_log_var, self.max_log_var)
         var = torch.exp(log_var)
         
         return mu, var
+
+
+# class FiLMResidualBlock(nn.Module):
+#     """Residual block modulated by spatial gamma and beta parameters."""
+#     def __init__(self, dim: int, cond_dim: int):
+#         super().__init__()
+#         self.norm1 = nn.LayerNorm(dim)
+#         self.fc1 = nn.Linear(dim, dim)
+#         self.act = nn.GELU()
+        
+#         self.norm2 = nn.LayerNorm(dim)
+#         self.fc2 = nn.Linear(dim, dim)
+        
+#         # Generator for affine parameters: affine gamma and beta
+#         self.film_generator = nn.Linear(cond_dim, dim * 2)
+
+#     def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+#         res = x
+        
+#         # Standard first projection
+#         x = self.act(self.fc1(self.norm1(x)))
+        
+#         # Generate FiLM scale (gamma) and shift (beta) from spatial condition
+#         gamma, beta = self.film_generator(cond).chunk(2, dim=-1)
+        
+#         # Modulate features: (1 + gamma) * norm(x) + beta
+#         x = self.norm2(x)
+#         x = (1.0 + gamma) * x + beta
+#         x = self.act(self.fc2(x))
+        
+#         return x + res
+
+
+# class ForwardDynamicsModel(nn.Module):
+#     def __init__(
+#         self, 
+#         state_dim: int, 
+#         hidden_dim: int, 
+#         num_bands: int = 16,
+#         min_log_var: float = -6.0,
+#         max_log_var: float = 2.0
+#     ):
+#         super().__init__()
+#         self.min_log_var = min_log_var
+#         self.max_log_var = max_log_var
+        
+#         # 1. Coordinate Encoding Path
+#         self.pe = FourierPositionalEncoding(input_dim=2, num_bands=num_bands)
+#         pos_dim = 2 * num_bands * 2
+        
+#         self.cond_net = nn.Sequential(
+#             nn.Linear(pos_dim, hidden_dim),
+#             nn.GELU(),
+#             nn.Linear(hidden_dim, hidden_dim)
+#         )
+        
+#         # 2. Base Feature Projection
+#         self.in_proj = nn.Linear(state_dim, hidden_dim)
+        
+#         # 3. FiLM Modulated Residual Blocks
+#         self.film_res1 = FiLMResidualBlock(hidden_dim, cond_dim=hidden_dim)
+#         self.film_res2 = FiLMResidualBlock(hidden_dim, cond_dim=hidden_dim)
+        
+#         # 4. Gated Output Heads
+#         self.gate_head = nn.Linear(hidden_dim, state_dim)
+#         self.mean_head = nn.Linear(hidden_dim, state_dim)
+#         self.log_var_head = nn.Linear(hidden_dim, state_dim)
+
+#     def forward(self, z1: torch.Tensor, delta_xy: torch.Tensor):
+#         # Compute spatial conditioning vector
+#         cond = self.cond_net(self.pe(delta_xy))
+        
+#         # Project source embedding z1 into hidden space
+#         h = self.in_proj(z1)
+        
+#         # Modulate feature representations dynamically via FiLM blocks
+#         h = self.film_res1(h, cond)
+#         h = self.film_res2(h, cond)
+        
+#         # Adaptive residual gating: alpha in [0, 1]
+#         alpha = torch.sigmoid(self.gate_head(h))
+#         delta_z = self.mean_head(h)
+        
+#         # Compute mean prediction: alpha * z1 + delta_z
+#         mu = alpha * z1 + delta_z
+        
+#         # Compute variance prediction
+#         log_var = torch.clamp(self.log_var_head(h), self.min_log_var, self.max_log_var)
+#         var = torch.exp(log_var)
+        
+#         return mu, var
 
 
 if __name__ == "__main__":

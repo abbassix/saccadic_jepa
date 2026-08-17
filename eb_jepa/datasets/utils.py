@@ -52,17 +52,15 @@ def init_data(env_name, config=None, **kwargs):
         )
 
         # 2. Build Validation Dataset & Loader
+        # val_config = OmegaConf.merge(config.data, {"split": "val", "min_distance": 0.0, "sigma": 0.0})
         val_config = OmegaConf.merge(config.data, {"split": "val"})
         # val_config = OmegaConf.merge(config.data, {"split": "val", "return_full_image": True})
         val_dset = dataset_cls(config=val_config)
-        
-        # Pull evaluation batch size if provided, otherwise default to a safe value
-        batch_size = config.data.get("batch_size", 512)
 
         # TODO
         val_loader = torch.utils.data.DataLoader(
             val_dset,
-            batch_size=batch_size,
+            batch_size=config.eval.batch_size,
             shuffle=False,
             num_workers=num_workers,
             pin_memory=pin_mem,

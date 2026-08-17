@@ -1,5 +1,5 @@
 # cfgs/train.yaml
-note: MobileNetV2, FiLM-based FDM
+note: MobileNetV2, Residual FDM, No IDM
 
 logging:
   log_wandb: true
@@ -20,6 +20,10 @@ data:
   dataset_path: "~/datasets/vision/imagenet"
   img_size: 320
   crop_size: 128
+  # min_distance: 96
+  # sigma: 32
+  # max_distance: 192
+  # center_sigma: 35
   batch_size: 1024
   num_workers: 16
   pin_mem: true
@@ -31,7 +35,7 @@ model:
   compile: false
   encoder_architecture: mobilenetv2
   idm:
-    hidden_dim: 1024
+    hidden_dim:
   predictor:
     hidden_dim: 1024
   regularizer:

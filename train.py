@@ -169,11 +169,15 @@ def run(
     ).to(device)
     
     # -- IDM --
-    idm = InverseDynamicsModel(
-        state_dim=projector.out_dim if cfg.model.regularizer.idm_after_proj else encoder.feature_dim,
-        hidden_dim=cfg.model.idm.hidden_dim,
-        action_dim=action_dim,
-    ).to(device)
+    if cfg.model.idm.hidden_dim is not None:
+        idm = InverseDynamicsModel(
+            state_dim=projector.out_dim if cfg.model.regularizer.idm_after_proj else encoder.feature_dim,
+            hidden_dim=cfg.model.idm.hidden_dim,
+            # action_dim=action_dim,
+        ).to(device)
+    else:
+        print("No IDM will be used (cfg.model.idm.hidden_dim is None)")
+        idm = None
     
     # -- REGULARIZER --
     if cfg.model.regularizer.type == "vicreg":
@@ -197,7 +201,7 @@ def run(
     encoder_params = sum(p.numel() for p in encoder.parameters())
     projector_params = sum(p.numel() for p in projector.parameters())
     predictor_params = sum(p.numel() for p in predictor.parameters())
-    idm_params = sum(p.numel() for p in idm.parameters())
+    idm_params = sum(p.numel() for p in idm.parameters()) if idm is not None else 0
     log_model_info(jepa, {"encoder": encoder_params, "projector": projector_params, "predictor": predictor_params, "idm": idm_params})
 
     log_config(cfg)
@@ -215,7 +219,7 @@ def run(
     enc_decay, enc_no_decay = split_decay_params(encoder)
     proj_decay, proj_no_decay = split_decay_params(projector)
     pred_decay, pred_no_decay = split_decay_params(predictor)
-    idm_decay, idm_no_decay = split_decay_params(idm)
+    idm_decay, idm_no_decay = split_decay_params(idm) if idm is not None else ([], [])
 
     jepa_optimizer = AdamW(
         [
@@ -288,12 +292,13 @@ def run(
             jepa_optimizer.zero_grad()
 
             with autocast(device.type, enabled=use_amp, dtype=dtype):
-                reg_loss_dict, pred_loss = jepa(ref_crop, action, goal_crop)
+                reg_loss_dict, pred_loss, mse_loss = jepa(ref_crop, action, goal_crop)
             
             if cfg.model.regularizer.type == "vicreg":
                 reg_loss = cfg.model.regularizer.cov_coeff * reg_loss_dict["cov_loss"] + cfg.model.regularizer.std_coeff * reg_loss_dict["std_loss"] + cfg.model.regularizer.idm_coeff * reg_loss_dict["idm_loss"]
                 epoch_stats["cov_loss"] += reg_loss_dict["cov_loss"].item()
                 epoch_stats["std_loss"] += reg_loss_dict["std_loss"].item()
+                epoch_stats["mse_loss"] += mse_loss.item()
             elif cfg.model.regularizer.type == "sigreg":
                 reg_loss = cfg.model.regularizer.bcs_coeff * reg_loss_dict["bcs_loss"] + cfg.model.regularizer.idm_coeff * reg_loss_dict["idm_loss"]
                 epoch_stats["bcs_loss"] += reg_loss_dict["bcs_loss"].item()
@@ -327,7 +332,7 @@ def run(
                 )
                 torch.nn.utils.clip_grad_norm_(
                     idm.parameters(), cfg.optim.get("grad_clip_idm", torch.inf)
-                )
+                ) if idm is not None else None
 
             scaler.step(jepa_optimizer)
             # Make sure you have this somewhere right after stepping!

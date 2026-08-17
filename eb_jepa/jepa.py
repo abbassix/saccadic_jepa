@@ -73,8 +73,9 @@ class JEPA(JEPAbase):
         # Call the instantiated loss function (input, target, var)
         goal_state = goal_state.detach()  # Detach goal_state to prevent gradients from flowing into the encoder
         pred_loss = self.predcost(pred_goal_state, goal_state, pred_var)
+        mse_loss = F.mse_loss(pred_goal_state, goal_state)
         
-        return reg_loss_dict, pred_loss
+        return reg_loss_dict, pred_loss, mse_loss
 
 
 class JEPAProbe(nn.Module):
