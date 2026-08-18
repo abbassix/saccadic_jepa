@@ -8,6 +8,7 @@ import fire
 
 import torch
 import torch.nn as nn
+import torchvision.transforms.v2 as v2
 
 import wandb
 from omegaconf import OmegaConf
@@ -268,6 +269,16 @@ def run(
     # eval_results = run_patch_localization_eval(jepa, cfg, device, val_loader, vis_dir=str(folder / "random_eval_visualizations"),)
     # logger.info(f"Evaluation completed on randomly initialized model as a baseline. Results: {eval_results}")
 
+    # Defined once during model setup
+    gpu_augmentations = torch.nn.Sequential(
+        v2.ToDtype(torch.float32, scale=True),  # Scales [0, 255] uint8 -> [0.0, 1.0] float32
+        v2.RandomApply([
+            v2.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1)
+        ], p=0.8),
+        v2.RandomGrayscale(p=0.2),
+        v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    )
+
     # -- TRAINING LOOP
     for epoch in range(start_epoch, cfg.optim.epochs):
         epoch_start_time = time()
@@ -284,9 +295,16 @@ def run(
             leave=False,
         )
         for _, (ref_crop, action, goal_crop, _, _) in pbar:
-            ref_crop = ref_crop.to(device)
+            # ref_crop = ref_crop.to(device)
             action = action.to(device)
-            goal_crop = goal_crop.to(device)
+            # goal_crop = goal_crop.to(device)
+            # 1. Move raw uint8 tensors to GPU
+            ref_crop = ref_crop.to(device, non_blocking=True)
+            goal_crop = goal_crop.to(device, non_blocking=True)
+
+            # 2. Apply independent augmentations directly on GPU memory
+            ref_crop = gpu_augmentations(ref_crop)
+            goal_crop = gpu_augmentations(goal_crop)
             
             # Calculate JEPA loss
             jepa_optimizer.zero_grad()

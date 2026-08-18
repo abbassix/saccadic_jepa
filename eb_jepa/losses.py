@@ -62,70 +62,70 @@ class CovarianceLoss(torch.nn.Module):
         return cov_loss
 
 
-# class InverseDynamicsLoss(nn.Module):
-#     def __init__(self, idm: nn.Module):
-#         super().__init__()
-#         self.idm = idm
-
-#     def forward(self, ref_state, goal_state, action):
-#         """
-#         Args:
-#             ref_state, goal_state: [B, D]
-#             action: [B, A]
-#         """
-#         if action is None:
-#             return torch.tensor(0.0, device=ref_state.device)
-#         pred_actions = self.idm(ref_state, goal_state)
-#         return F.mse_loss(pred_actions, action)
-
-
 class InverseDynamicsLoss(nn.Module):
-    def __init__(
-        self, 
-        idm: nn.Module, 
-        min_log_var: float = -6.0, 
-        max_log_var: float = 3.0,
-        eps: float = 1e-5
-    ):
+    def __init__(self, idm: nn.Module):
         super().__init__()
         self.idm = idm
-        self.min_log_var = min_log_var
-        self.max_log_var = max_log_var
-        self.eps = eps
 
-    def forward(self, ref_state: torch.Tensor, goal_state: torch.Tensor, action: torch.Tensor):
+    def forward(self, ref_state, goal_state, action):
         """
         Args:
-            ref_state:  [B, state_dim] (online encoder, grads ON)
-            goal_state: [B, state_dim] (target embedding, grads OFF)
-            action:     [B, 2] ground-truth relative coordinates (dx, dy)
+            ref_state, goal_state: [B, D]
+            action: [B, A]
         """
         if action is None:
             return torch.tensor(0.0, device=ref_state.device)
+        pred_actions = self.idm(ref_state, goal_state)
+        return F.mse_loss(pred_actions, action)
 
-        # 1. Stop-gradient on target goal_state to prevent representation collapse
-        goal_state_target = goal_state.detach()
 
-        # 2. Forward pass through IDM: outputs [mu_x, mu_y, log_var_x, log_var_y]
-        pred_params = self.idm(ref_state, goal_state_target)
+# class InverseDynamicsLoss(nn.Module):
+#     def __init__(
+#         self, 
+#         idm: nn.Module, 
+#         min_log_var: float = -6.0, 
+#         max_log_var: float = 3.0,
+#         eps: float = 1e-5
+#     ):
+#         super().__init__()
+#         self.idm = idm
+#         self.min_log_var = min_log_var
+#         self.max_log_var = max_log_var
+#         self.eps = eps
 
-        # 3. Cast to FP32 for linear algebra & exponent stability under bfloat16 AMP
-        pred_params = pred_params.float()
-        action = action.float()
+#     def forward(self, ref_state: torch.Tensor, goal_state: torch.Tensor, action: torch.Tensor):
+#         """
+#         Args:
+#             ref_state:  [B, state_dim] (online encoder, grads ON)
+#             goal_state: [B, state_dim] (target embedding, grads OFF)
+#             action:     [B, 2] ground-truth relative coordinates (dx, dy)
+#         """
+#         if action is None:
+#             return torch.tensor(0.0, device=ref_state.device)
 
-        # 4. Split predictions
-        mu = pred_params[:, :2]
-        log_var = torch.clamp(pred_params[:, 2:], self.min_log_var, self.max_log_var)
-        var = torch.exp(log_var) + self.eps
+#         # 1. Stop-gradient on target goal_state to prevent representation collapse
+#         goal_state_target = goal_state.detach()
 
-        # 5. Compute Diagonal Gaussian Negative Log-Likelihood (NLL)
-        # NLL = 0.5 * [ ((action - mu)^2 / var) + log(var) ]
-        nll = 0.5 * (((action - mu) ** 2) / var + log_var)
+#         # 2. Forward pass through IDM: outputs [mu_x, mu_y, log_var_x, log_var_y]
+#         pred_params = self.idm(ref_state, goal_state_target)
+
+#         # 3. Cast to FP32 for linear algebra & exponent stability under bfloat16 AMP
+#         pred_params = pred_params.float()
+#         action = action.float()
+
+#         # 4. Split predictions
+#         mu = pred_params[:, :2]
+#         log_var = torch.clamp(pred_params[:, 2:], self.min_log_var, self.max_log_var)
+#         var = torch.exp(log_var) + self.eps
+
+#         # 5. Compute Diagonal Gaussian Negative Log-Likelihood (NLL)
+#         # NLL = 0.5 * [ ((action - mu)^2 / var) + log(var) ]
+#         nll = 0.5 * (((action - mu) ** 2) / var + log_var)
         
-        # Sum over coordinate dimensions (dx, dy), mean over batch
-        loss = nll.sum(dim=-1).mean()
+#         # Sum over coordinate dimensions (dx, dy), mean over batch
+#         loss = nll.sum(dim=-1).mean()
 
-        return loss
+#         return loss
 
 
 class VC_IDM_Regularizer(nn.Module):

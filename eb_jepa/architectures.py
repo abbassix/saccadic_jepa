@@ -362,47 +362,60 @@ class ResidualBlock(nn.Module):
 #         return 0.5 * (pos - neg)
 
 
-class InverseDynamicsModel(nn.Module):
-    def __init__(self, state_dim: int, hidden_dim: int):
-        super().__init__()
-        in_dim = state_dim * 2
+# class InverseDynamicsModel(nn.Module):
+#     def __init__(self, state_dim: int, hidden_dim: int):
+#         super().__init__()
+#         in_dim = state_dim * 2
         
-        self.in_proj = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
+#         self.in_proj = nn.Sequential(
+#             nn.Linear(in_dim, hidden_dim),
+#             nn.LayerNorm(hidden_dim),
+#             nn.GELU(),
+#             nn.Dropout(0.1)
+#         )
+#         self.res1 = ResidualBlock(hidden_dim, hidden_dim)
+#         self.res2 = ResidualBlock(hidden_dim, hidden_dim // 2)
+        
+#         # Output 4 channels: [mu_x, mu_y, log_var_x, log_var_y]
+#         self.head = nn.Sequential(
+#             nn.Linear(hidden_dim // 2, hidden_dim // 4),
+#             nn.GELU(),
+#             nn.Linear(hidden_dim // 4, 4)
+#         )
+
+#     def _forward_single(self, z1, z2):
+#         h = torch.cat([z1, z2], dim=-1)
+        
+#         feat = self.in_proj(h)
+#         feat = self.res1(feat)
+#         feat = self.res2(feat)
+#         return self.head(feat)
+
+#     def forward(self, z1, z2):
+#         pos = self._forward_single(z1, z2)  # [B, 4]
+#         neg = self._forward_single(z2, z1)  # [B, 4]
+
+#         # 1. Anti-symmetric for predicted coordinates (dx, dy)
+#         mu = 0.5 * (pos[:, :2] - neg[:, :2])
+
+#         # 2. Symmetric for predicted log-variances (log_var_x, log_var_y)
+#         log_var = 0.5 * (pos[:, 2:] + neg[:, 2:])
+
+#         return torch.cat([mu, log_var], dim=-1)
+
+class InverseDynamicsModel(nn.Module):
+    def __init__(self, state_dim: int = 1280, hidden_dim: int = 256):
+        super().__init__()
+        # Concatenate z1 and z2 along the feature dimension
+        self.net = nn.Sequential(
+            nn.Linear(state_dim * 2, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
-            nn.Dropout(0.1)
-        )
-        self.res1 = ResidualBlock(hidden_dim, hidden_dim)
-        self.res2 = ResidualBlock(hidden_dim, hidden_dim // 2)
-        
-        # Output 4 channels: [mu_x, mu_y, log_var_x, log_var_y]
-        self.head = nn.Sequential(
-            nn.Linear(hidden_dim // 2, hidden_dim // 4),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 4, 4)
+            nn.Linear(hidden_dim, 2)  # Predicts (delta_x, delta_y)
         )
 
-    def _forward_single(self, z1, z2):
-        h = torch.cat([z1, z2], dim=-1)
-        
-        feat = self.in_proj(h)
-        feat = self.res1(feat)
-        feat = self.res2(feat)
-        return self.head(feat)
-
-    def forward(self, z1, z2):
-        pos = self._forward_single(z1, z2)  # [B, 4]
-        neg = self._forward_single(z2, z1)  # [B, 4]
-
-        # 1. Anti-symmetric for predicted coordinates (dx, dy)
-        mu = 0.5 * (pos[:, :2] - neg[:, :2])
-
-        # 2. Symmetric for predicted log-variances (log_var_x, log_var_y)
-        log_var = 0.5 * (pos[:, 2:] + neg[:, 2:])
-
-        return torch.cat([mu, log_var], dim=-1)
-
+    def forward(self, z1: torch.Tensor, z2: torch.Tensor) -> torch.Tensor:
+        return self.net(torch.cat([z1, z2], dim=-1))
 
 class FourierPositionalEncoding(nn.Module):
     """Maps low-dim continuous coordinates to high-dim spatial frequencies."""

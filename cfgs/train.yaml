@@ -1,5 +1,5 @@
 # cfgs/train.yaml
-note: MobileNetV2, Small FiLMFDM, No IDM
+note: MobileNetV2, Small FiLMFDM, No IDM + medium color jitter + normalization!
 
 logging:
   log_wandb: true

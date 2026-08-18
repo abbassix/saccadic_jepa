@@ -34,6 +34,7 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
+import torchvision.transforms.v2 as v2
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from omegaconf import OmegaConf
@@ -46,11 +47,6 @@ logger = get_logger(__name__)
 
 _IDM_COLOR = "yellow"
 _PREDICTOR_COLOR = "orange"
-
-
-def _per_sample_mse(a, b):
-    """Mean-squared-error per sample. a, b: [B, C, H, W] -> [B]"""
-    return torch.mean((a - b) ** 2, dim=[1, 2, 3])
 
 
 def _idm_predict_offset(idm_module, projector, idm_after_proj, ref_state, goal_state):
@@ -89,9 +85,10 @@ def _predictor_grid_search(
         action_flat = action.reshape(B * C, 2)
         pred_mean, pred_log_var = jepa.predictor(ref_exp, action_flat)
         pred_var = torch.exp(pred_log_var)
+        mse = F.mse_loss(pred_mean, goal_exp, reduction='none')
         nll = F.gaussian_nll_loss(pred_mean, goal_exp, pred_var, reduction='none', full=False)
         reduce_dims = list(range(1, nll.dim()))
-        return torch.mean(nll, dim=reduce_dims).reshape(B, C)
+        return torch.mean(nll, dim=reduce_dims).reshape(B, C), torch.mean(mse, dim=reduce_dims).reshape(B, C)
 
     # --- coarse pass (same as before) ---
     xs = torch.arange(0, max_offset + 1e-3, stride, device=device).clamp(max=max_offset)
@@ -99,9 +96,10 @@ def _predictor_grid_search(
     gx, gy = torch.meshgrid(xs, ys, indexing="xy")
     corners = torch.stack([gx.reshape(-1), gy.reshape(-1)], dim=-1).unsqueeze(0).expand(B, -1, -1)  # [B, C, 2]
 
-    mse = eval_candidates(corners)
-    best_idx = torch.argmin(mse, dim=1)
+    nll, mse = eval_candidates(corners)
+    best_idx = torch.argmin(nll, dim=1)
     best_corner = corners[torch.arange(B, device=device), best_idx]  # [B, 2]
+    best_nll = nll.gather(1, best_idx.unsqueeze(1)).squeeze(1)
     best_mse = mse.gather(1, best_idx.unsqueeze(1)).squeeze(1)
 
     # --- refinement rounds: shrink window around current best ---
@@ -116,17 +114,19 @@ def _predictor_grid_search(
         local_offsets = torch.stack([ox.reshape(-1), oy.reshape(-1)], dim=-1)  # [K, 2]
         local_corners = (best_corner.unsqueeze(1) + local_offsets.unsqueeze(0)).clamp(0, max_offset)  # [B, K, 2]
 
-        mse_local = eval_candidates(local_corners)
-        best_idx_local = torch.argmin(mse_local, dim=1)
+        nll_local, mse_local = eval_candidates(local_corners)
+        best_idx_local = torch.argmin(nll_local, dim=1)
         cand_corner = local_corners[torch.arange(B, device=device), best_idx_local]
+        cand_nll = nll_local.gather(1, best_idx_local.unsqueeze(1)).squeeze(1)
         cand_mse = mse_local.gather(1, best_idx_local.unsqueeze(1)).squeeze(1)
 
-        improved = cand_mse < best_mse
+        improved = cand_nll < best_nll
         best_corner = torch.where(improved.unsqueeze(1), cand_corner, best_corner)
+        best_nll = torch.where(improved, cand_nll, best_nll)
         best_mse = torch.where(improved, cand_mse, best_mse)
 
     best_offset_px = best_corner - ref_origin
-    return best_offset_px, best_mse
+    return best_offset_px, best_nll, best_mse
 
 
 def _load_sample_with_full_image(dataset, idx, cfg=None):
@@ -140,25 +140,18 @@ def _load_sample_with_full_image(dataset, idx, cfg=None):
     Returns: ref_crop [3,S,S], goal_crop [3,S,S], ref_origin [2], goal_origin [2],
              img [3,R,R]  (all CPU tensors, unbatched)
     """
-    # TODO
-    # assert getattr(dataset.config, "split", None) == "val", (
-    #     "_load_sample_with_full_image relies on the dataset's idx-seeded RNG, "
-    #     "which is only deterministic for split='val'."
-    # )
 
     path, _ = dataset.samples[idx]
     img = Image.open(path).convert("RGB")
-    img = dataset.transform(img)
+    original_img = dataset.resize_transform(img)
+    img = dataset.eval_transform(original_img)
+    original_img = dataset.viz_transform(original_img)
     
     _, height, width = img.shape
 
     rng = random.Random(idx)
     x_ref, y_ref = dataset._get_random_crop_bounds(width, height, rng)
     x_goal, y_goal = dataset._get_random_crop_bounds(width, height, rng)
-    # x_ref, y_ref, x_goal, y_goal = dataset._get_random_crop_bounds(width, height, min_dist=96, max_dist=192, center_sigma=35, rng=rng)
-    # min_dist = cfg.data.get("min_distance", 0.0) if cfg is not None else 0.0
-    # sigma = cfg.data.get("sigma", 0.0) if cfg is not None else 0.0
-    # x_ref, y_ref, x_goal, y_goal = dataset._get_random_crop_bounds(width, height, min_distance=min_dist, sigma=sigma, rng=rng)
 
     crop_size = dataset.crop_size
     ref_crop = img[:, y_ref : y_ref + crop_size, x_ref : x_ref + crop_size]
@@ -166,10 +159,10 @@ def _load_sample_with_full_image(dataset, idx, cfg=None):
     ref_origin = torch.tensor([x_ref, y_ref], dtype=torch.float32)
     goal_origin = torch.tensor([x_goal, y_goal], dtype=torch.float32)
 
-    return ref_crop, goal_crop, ref_origin, goal_origin, img
+    return ref_crop, goal_crop, ref_origin, goal_origin, original_img
 
 
-def _draw_box(draw, origin_xy, size, color, width=2):
+def _draw_box(draw, origin_xy, size, color, width=1):
     """Draw a rectangle outline of `size`x`size` starting at origin_xy=(x, y)."""
     x, y = origin_xy
     draw.rectangle([x, y, x + size, y + size], outline=color, width=width)
@@ -184,6 +177,8 @@ def _save_localization_visualization(
     mse_ref_goal,             # float
     mse_idm_pred_goal,        # float or None
     mse_predictor_pred_goal,  # float or None
+    best_nll,
+    best_mse,
     img_size,
     crop_size,
     out_path,
@@ -227,13 +222,13 @@ def _save_localization_visualization(
         draw.text((px_i + 2, py_i + 2), "PRED", fill=_PREDICTOR_COLOR)
 
     y_text = img_size + 4
-    draw.text((4, y_text), f"MSE(ref,goal)          = {mse_ref_goal:.4f}", fill="white")
+    draw.text((4, y_text), f"MSE(ref,goal) = {mse_ref_goal:.4f}", fill="white")
     if mse_idm_pred_goal is not None:
         y_text += 16
-        draw.text((4, y_text), f"MSE(idm_pred,goal)     = {mse_idm_pred_goal:.4f}", fill=_IDM_COLOR)
+        draw.text((4, y_text), f"MSE(idm_pred,goal) = {mse_idm_pred_goal:.4f}", fill=_IDM_COLOR)
     if mse_predictor_pred_goal is not None:
         y_text += 16
-        draw.text((4, y_text), f"MSE(pred_search,goal)  = {mse_predictor_pred_goal:.4f}", fill=_PREDICTOR_COLOR)
+        draw.text((4, y_text), f"pred obs, nll, mse  = {float(mse_predictor_pred_goal):.4f}, {best_nll.item():.4f}, {best_mse.item():.4f}", fill=_PREDICTOR_COLOR)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_img.save(out_path)
@@ -271,7 +266,10 @@ def _run_visualization_pass(
         goal_origin = goal_origin.unsqueeze(0).to(device)
         img = img.unsqueeze(0).to(device)
 
-        mse_ref_goal = _per_sample_mse(ref_crop, goal_crop).item()
+        ref_state = jepa.encoder(ref_crop)
+        goal_state = jepa.encoder(goal_crop)
+        reduce_dims = list(range(1, ref_state.dim()))
+        mse_ref_goal = torch.mean((ref_state - goal_state) ** 2, dim=reduce_dims).item()
 
         ref_state = jepa.encoder(ref_crop)
         goal_state = jepa.encoder(goal_crop)
@@ -289,19 +287,25 @@ def _run_visualization_pass(
             idm_origin_clamped = (ref_origin + idm_offset).clamp(0, max_offset)
             x, y = int(round(idm_origin_clamped[0, 0].item())), int(round(idm_origin_clamped[0, 1].item()))
             idm_crop = img[:, :, y : y + crop_size, x : x + crop_size]
-            mse_idm_pred_goal = _per_sample_mse(idm_crop, goal_crop).item()
+            idm_pred_state = jepa.encoder(idm_crop)
+            reduce_dims = list(range(1, idm_pred_state.dim()))
+            mse_idm_pred_goal = torch.mean((idm_pred_state - goal_state) ** 2, dim=reduce_dims).item()
             idm_pred_origin = (x, y)
 
         predictor_pred_origin = None
         mse_predictor_pred_goal = None
         if has_predictor:
-            pred_offset, _ = _predictor_grid_search(
+            pred_offset, best_nll, best_mse = _predictor_grid_search(
                 jepa, ref_state, goal_state, ref_origin, max_offset, cfg, candidate_stride, device, refine_iters=refine_iters, refine_window=refine_window,
             )
             pred_origin_clamped = (ref_origin + pred_offset).clamp(0, max_offset)
-            x, y = int(round(pred_origin_clamped[0, 0].item())), int(round(pred_origin_clamped[0, 1].item()))
+            max_coord = img.shape[-1] - crop_size
+            x = min(max(0, int(round(pred_origin_clamped[0, 0].item()))), max_coord)
+            y = min(max(0, int(round(pred_origin_clamped[0, 1].item()))), max_coord)
             pred_crop = img[:, :, y : y + crop_size, x : x + crop_size]
-            mse_predictor_pred_goal = _per_sample_mse(pred_crop, goal_crop).item()
+            predictor_pred_goal = jepa.encoder(pred_crop)
+            reduce_dims = list(range(1, predictor_pred_goal.dim()))
+            mse_predictor_pred_goal = torch.mean((predictor_pred_goal - goal_state) ** 2, dim=reduce_dims).item()
             predictor_pred_origin = (x, y)
 
         _save_localization_visualization(
@@ -313,6 +317,8 @@ def _run_visualization_pass(
             mse_ref_goal=mse_ref_goal,
             mse_idm_pred_goal=mse_idm_pred_goal,
             mse_predictor_pred_goal=mse_predictor_pred_goal,
+            best_nll=best_nll,
+            best_mse=best_mse,
             img_size=cfg.data.img_size,
             crop_size=crop_size,
             out_path=vis_out_dir / f"sample_{global_i:05d}.png",
@@ -389,11 +395,24 @@ def run_patch_localization_eval(
             bar_format='{desc} | {n_fmt}/{total_fmt} batches | {postfix}',
             leave=False,
         )
+
+    gpu_augmentations = torch.nn.Sequential(
+        v2.ToDtype(torch.float32, scale=True),  # Scales [0, 255] uint8 -> [0.0, 1.0] float32
+        v2.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    )
     # Compatible unpacking format matching our 5-tuple output
     for idx, (ref_crop, offset_px, goal_crop, ref_origin, goal_origin) in pbar:
         # ... (Move to device) ...
-        ref_crop = ref_crop.to(device)
-        goal_crop = goal_crop.to(device)
+        # 1. Move raw uint8 tensors to GPU
+        ref_crop = ref_crop.to(device, non_blocking=True)
+        goal_crop = goal_crop.to(device, non_blocking=True)
+
+        # 2. Apply independent augmentations directly on GPU memory
+        ref_crop = gpu_augmentations(ref_crop)
+        goal_crop = gpu_augmentations(goal_crop)
+
+        # ref_crop = ref_crop.to(device)
+        # goal_crop = goal_crop.to(device)
         offset_px = offset_px.to(device)
         ref_origin = ref_origin.to(device)
         goal_origin = goal_origin.to(device)
@@ -429,7 +448,7 @@ def run_patch_localization_eval(
 
         # ---- PREDICTOR GRID-SEARCH PREDICTION ----
         if has_predictor:
-            pred_offset_px, _ = _predictor_grid_search(
+            pred_offset_px, _, _ = _predictor_grid_search(
                 jepa, ref_state, goal_state, ref_origin, max_offset, cfg,
                 candidate_stride, device, refine_iters=refine_iters, refine_window=refine_window,
             )
